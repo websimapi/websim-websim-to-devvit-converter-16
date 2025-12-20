@@ -13,9 +13,9 @@ export const generatePackageJson = (slug, dependencies = {}, devDependencies = {
     "validate": "node scripts/validate.js"
   },
   "dependencies": {
-    "@devvit/public-api": "latest",
-    "@devvit/kit": "latest",
-    "@devvit/web": "latest",
+    "@devvit/public-api": "^0.10.16",
+    "@devvit/kit": "^0.10.16",
+    "@devvit/web": "^0.10.16",
     ...dependencies
   },
   "devDependencies": {

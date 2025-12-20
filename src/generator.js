@@ -65,11 +65,12 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
 
     // Identify Index for Devvit Main.tsx
     let indexPath = 'index.html'; 
-    for (const p of Object.keys(clientFiles)) {
-        if (p.endsWith('index.html')) {
-            indexPath = p;
-            break; 
-        }
+    // Prioritize root index.html, then search recursively
+    if (clientFiles['index.html']) {
+        indexPath = 'index.html';
+    } else {
+        const found = Object.keys(clientFiles).find(p => p.endsWith('/index.html'));
+        if (found) indexPath = found;
     }
 
     // 2. Generate Config Files
