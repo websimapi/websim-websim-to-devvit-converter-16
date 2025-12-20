@@ -308,11 +308,15 @@ class WebsimCollection {
     
     async create(data) {
         const id = \`\${this.name}_\${Date.now()}_\${Math.random().toString(36).substr(2, 9)}\`;
+        
+        // ✅ Get real username from websim stub
+        const currentUser = await window.websim.getCurrentUser();
+        
         const record = {
             id,
             ...data,
             created_at: new Date().toISOString(),
-            username: 'Player' // Could be enhanced with real user data
+            username: currentUser.username // ✅ Use real username
         };
         
         // Optimistic update
@@ -609,11 +613,16 @@ export default socket;
 export const websimStubsJs = `
 // WebSim API Stubs for standalone running
 (function() {
+    // Extract username from URL query params
+    const params = new URLSearchParams(window.location.search);
+    const username = params.get('username') || 'Player';
+    const userId = 'user_' + Math.random().toString(36).substr(2, 9);
+    
     if (!window.websim) {
       window.websim = {
         getCurrentUser: async () => ({
-            id: 'user_' + Math.random().toString(36).substr(2,9),
-            username: 'Player',
+            id: userId,
+            username: username, // ✅ Use real username from Devvit
             avatar_url: 'https://www.redditstatic.com/avatars/avatar_default_02_FF4500.png'
         }),
         getProject: async () => ({
