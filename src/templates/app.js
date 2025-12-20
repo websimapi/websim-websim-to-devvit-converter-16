@@ -34,7 +34,7 @@ Devvit.addCustomPostType({
 
     // Handle messages FROM WebView
     // Get current user
-    const [currentUser] = useAsync(async () => {
+    const { data: currentUser } = useAsync(async () => {
       try {
         const user = await context.reddit.getCurrentUser();
         return user?.username || 'Anonymous';
@@ -42,7 +42,7 @@ Devvit.addCustomPostType({
         console.error('Failed to get user:', e);
         return 'Anonymous';
       }
-    }, {});
+    });
     
     // Queue for Redis operations (workaround for ServerCallRequired)
     const [redisQueue, setRedisQueue] = useState([]);
