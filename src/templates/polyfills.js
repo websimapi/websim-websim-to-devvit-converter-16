@@ -213,11 +213,20 @@ export const devvitApiPolyfill = `
 })();
 `;
 
-export const websimSocketPolyfill = `
+export const websimSocketPolyfill = `/**
+ * WebSim Socket -> Devvit PostMessage Bridge
+ * 
+ * Maps WebSim Room/Collection API to Devvit's postMessage + Redis backend
+ * This version uses the DevvitAPI (postMessage) instead of fake HTTP endpoints
+ */
+
 console.log('[WebSim Socket] Initializing PostMessage Bridge...');
 
 const _clientId = 'user_' + Math.random().toString(36).substr(2, 9);
 
+/**
+ * Collection class - manages a data collection with realtime sync
+ */
 class WebsimCollection {
     constructor(name, socket) {
         this.name = name;
@@ -226,12 +235,15 @@ class WebsimCollection {
         this.subs = [];
         this.loaded = false;
         this.loading = false;
+        
+        // Start loading data
         this._load();
     }
     
     async _load() {
         if (this.loading) return;
         this.loading = true;
+        
         try {
             const dataMap = await window.DevvitAPI.dbGet(this.name);
             this.records = Object.values(dataMap);
@@ -239,18 +251,59 @@ class WebsimCollection {
             this._notify();
         } catch (error) {
             console.error(\`[WebSim DB] Failed to load collection "\${this.name}"\`, error);
-            this.loaded = true;
+            this.loaded = true; // Mark as loaded even on error to prevent infinite retries
         } finally {
             this.loading = false;
         }
     }
     
     getList() {
-        return this.records.sort((a, b) => {
+        const sorted = this.records.sort((a, b) => {
             const aTime = new Date(a.created_at || 0).getTime();
             const bTime = new Date(b.created_at || 0).getTime();
-            return bTime - aTime;
+            return bTime - aTime; // Newest first
         });
+        
+        // Return array-like object with all array methods
+        // This allows game code to call .filter(), .map(), etc.
+        return sorted;
+    }
+    
+    // Expose array methods directly on collection for convenience
+    filter(...args) {
+        return this.getList().filter(...args);
+    }
+    
+    map(...args) {
+        return this.getList().map(...args);
+    }
+    
+    find(...args) {
+        return this.getList().find(...args);
+    }
+    
+    findIndex(...args) {
+        return this.getList().findIndex(...args);
+    }
+    
+    forEach(...args) {
+        return this.getList().forEach(...args);
+    }
+    
+    some(...args) {
+        return this.getList().some(...args);
+    }
+    
+    every(...args) {
+        return this.getList().every(...args);
+    }
+    
+    reduce(...args) {
+        return this.getList().reduce(...args);
+    }
+    
+    get length() {
+        return this.records.length;
     }
     
     async create(data) {
@@ -259,20 +312,28 @@ class WebsimCollection {
             id,
             ...data,
             created_at: new Date().toISOString(),
-            username: 'Player'
+            username: 'Player' // Could be enhanced with real user data
         };
+        
+        // Optimistic update
         this.records.push(record);
         this._notify();
         
         try {
+            // Persist to Devvit Redis
             await window.DevvitAPI.dbSet(this.name, id, record);
+            
+            // Broadcast to other clients
             this.socket.send({
                 type: 'db_sync',
                 collection: this.name,
                 op: { cmd: 'create', data: record }
             });
+            
             return record;
         } catch (error) {
+            // Rollback on error
+            console.error('[WebSim DB] Create failed', error);
             this.records = this.records.filter(r => r.id !== id);
             this._notify();
             throw error;
@@ -281,22 +342,31 @@ class WebsimCollection {
     
     async update(id, data) {
         const idx = this.records.findIndex(r => r.id === id);
-        if (idx === -1) throw new Error(\`Record not found: \${id}\`);
+        if (idx === -1) {
+            throw new Error(\`Record not found: \${id}\`);
+        }
         
         const oldRecord = this.records[idx];
         const record = { ...oldRecord, ...data };
+        
+        // Optimistic update
         this.records[idx] = record;
         this._notify();
         
         try {
             await window.DevvitAPI.dbSet(this.name, id, record);
+            
+            // Broadcast sync
             this.socket.send({
                 type: 'db_sync',
                 collection: this.name,
                 op: { cmd: 'update', data: record }
             });
+            
             return record;
         } catch (error) {
+            // Rollback
+            console.error('[WebSim DB] Update failed', error);
             this.records[idx] = oldRecord;
             this._notify();
             throw error;
@@ -305,20 +375,26 @@ class WebsimCollection {
     
     async delete(id) {
         const idx = this.records.findIndex(r => r.id === id);
-        if (idx === -1) return;
+        if (idx === -1) return; // Already deleted
         
         const oldRecord = this.records[idx];
+        
+        // Optimistic delete
         this.records = this.records.filter(r => r.id !== id);
         this._notify();
         
         try {
             await window.DevvitAPI.dbDelete(this.name, id);
+            
+            // Broadcast sync
             this.socket.send({
                 type: 'db_sync',
                 collection: this.name,
                 op: { cmd: 'delete', data: { id } }
             });
         } catch (error) {
+            // Rollback
+            console.error('[WebSim DB] Delete failed', error);
             this.records.splice(idx, 0, oldRecord);
             this._notify();
             throw error;
@@ -327,78 +403,154 @@ class WebsimCollection {
     
     subscribe(callback) {
         this.subs.push(callback);
-        if (this.loaded) callback(this.getList());
-        return () => { this.subs = this.subs.filter(s => s !== callback); };
+        
+        // Immediately call with current data if loaded
+        if (this.loaded) {
+            callback(this.getList());
+        }
+        
+        // Return unsubscribe function
+        return () => {
+            this.subs = this.subs.filter(s => s !== callback);
+        };
     }
     
     _notify() {
         const list = this.getList();
-        this.subs.forEach(cb => { try { cb(list); } catch (e) { console.error(e); } });
+        this.subs.forEach(cb => {
+            try {
+                cb(list);
+            } catch (error) {
+                console.error('[WebSim Collection] Subscriber error', error);
+            }
+        });
     }
     
+    /**
+     * Handle remote operations from other clients
+     */
     _handleRemoteOp(op) {
         if (op.cmd === 'create') {
-            if (!this.records.find(r => r.id === op.data.id)) this.records.push(op.data);
+            // Don't duplicate if already exists
+            if (!this.records.find(r => r.id === op.data.id)) {
+                this.records.push(op.data);
+            }
         } else if (op.cmd === 'update') {
             const idx = this.records.findIndex(r => r.id === op.data.id);
-            if (idx !== -1) this.records[idx] = op.data;
-            else this.records.push(op.data);
+            if (idx !== -1) {
+                this.records[idx] = op.data;
+            } else {
+                // Record doesn't exist locally, add it
+                this.records.push(op.data);
+            }
         } else if (op.cmd === 'delete') {
             this.records = this.records.filter(r => r.id !== op.data.id);
         }
+        
         this._notify();
     }
 }
 
+/**
+ * WebsimSocket - Main API compatible with WebSim games
+ */
 class WebsimSocket {
     constructor() {
         this.clientId = _clientId;
         this.collections = {};
         this.connected = false;
         this.listeners = {};
+        
+        // Stub properties for compatibility
         this.roomState = {};
         this.presence = {};
         this.peers = {};
         
+        // Listen for realtime events
         this._unsubscribeRealtime = window.DevvitAPI.onRealtimeMessage((payload) => {
+            // Ignore self-sent messages (they echo back)
             if (payload.senderId === this.clientId) return;
+            
             const { type, data } = payload;
+            
+            // Handle DB sync events
             if (type === 'db_sync') {
                 const { collection, op } = data;
-                if (this.collections[collection]) this.collections[collection]._handleRemoteOp(op);
+                if (this.collections[collection]) {
+                    this.collections[collection]._handleRemoteOp(op);
+                }
                 return;
             }
+            
+            // Handle custom events
             this._handleRemoteEvent(type, data, payload.senderId);
         });
     }
     
     collection(name) {
-        if (!this.collections[name]) this.collections[name] = new WebsimCollection(name, this);
+        if (!this.collections[name]) {
+            this.collections[name] = new WebsimCollection(name, this);
+        }
         return this.collections[name];
     }
     
     async initialize() {
         console.log('[WebSim Socket] Connected.');
         this.connected = true;
-        this.send({ type: 'join', data: { username: 'Player', id: this.clientId } });
+        
+        // Announce join
+        this.send({
+            type: 'join',
+            data: {
+                username: 'Player',
+                id: this.clientId
+            }
+        });
+        
         return Promise.resolve();
     }
     
     send(eventData) {
         const type = eventData.type || 'broadcast_event';
         const payload = eventData.data || eventData;
-        window.DevvitAPI.realtimeSend({ type, data: payload, senderId: this.clientId })
-            .catch(e => console.error('[WebSim Socket] Send error', e));
+        
+        // Send via realtime
+        window.DevvitAPI.realtimeSend({
+            type,
+            data: payload,
+            senderId: this.clientId
+        }).catch(error => {
+            console.error('[WebSim Socket] Send error', error);
+        });
     }
     
     _handleRemoteEvent(type, data, senderId) {
-        if (this.onmessage) this.onmessage({ data: { type, ...data, clientId: senderId } });
+        // Trigger onmessage handler if set
+        if (this.onmessage) {
+            this.onmessage({
+                data: {
+                    type,
+                    ...data,
+                    clientId: senderId
+                }
+            });
+        }
+        
+        // Trigger specific listeners
         const handlers = this.listeners[type] || [];
-        handlers.forEach(handler => { try { handler({ type, data, senderId }); } catch (e) { console.error(e); } });
+        handlers.forEach(handler => {
+            try {
+                handler({ type, data, senderId });
+            } catch (error) {
+                console.error('[WebSim Socket] Event handler error', error);
+            }
+        });
     }
     
     on(eventType, handler) {
-        if (!this.listeners[eventType]) this.listeners[eventType] = [];
+        if (!this.listeners[eventType]) {
+            this.listeners[eventType] = [];
+        }
         this.listeners[eventType].push(handler);
     }
     
@@ -407,25 +559,49 @@ class WebsimSocket {
         this.listeners[eventType] = this.listeners[eventType].filter(h => h !== handler);
     }
     
-    updatePresence() { console.warn('presence not impl'); }
-    updateRoomState() { console.warn('room state not impl'); }
-    subscribePresence() { return () => {}; }
-    subscribeRoomState() { return () => {}; }
-    subscribePresenceUpdateRequests() { return () => {}; }
+    // Stub methods for compatibility
+    updatePresence() {
+        console.warn('[WebSim Socket] updatePresence() not fully implemented');
+    }
+    
+    updateRoomState() {
+        console.warn('[WebSim Socket] updateRoomState() not fully implemented');
+    }
+    
+    subscribePresence() {
+        return () => {};
+    }
+    
+    subscribeRoomState() {
+        return () => {};
+    }
+    
+    subscribePresenceUpdateRequests() {
+        return () => {};
+    }
     
     disconnect() {
-        if (this._unsubscribeRealtime) this._unsubscribeRealtime();
+        if (this._unsubscribeRealtime) {
+            this._unsubscribeRealtime();
+        }
         this.connected = false;
     }
 }
 
+// Create singleton instance
 const socket = new WebsimSocket();
 window.WebsimSocket = WebsimSocket;
+
+// Expose as party.room (WebSim convention)
 if (!window.party) {
     window.party = socket;
     window.party.room = socket;
 }
-socket.initialize().catch(e => console.error(e));
+
+// Auto-initialize
+socket.initialize().catch(error => {
+    console.error('[WebSim Socket] Initialization failed', error);
+});
 
 export default socket;
 `;
