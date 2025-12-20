@@ -428,6 +428,7 @@ if (!window.party) {
 socket.initialize().catch(e => console.error(e));
 
 export default socket;
+`;
 
 export const websimStubsJs = `
 // WebSim API Stubs for standalone running
