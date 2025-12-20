@@ -9,7 +9,7 @@ import {
     generateDevvitYaml,
     generateViteConfig,
     tsConfig,
-    getServerIndexTs,
+    getServerMainTsx,
     simpleLoggerJs,
     devvitApiPolyfill,
     websimSocketPolyfill,
@@ -101,8 +101,8 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
     zip.file("scripts/validate.js", validateScript);
 
     // 3. Client Folder (Source)
-    // Structure: src/client/ for frontend source, src/server/ for Devvit backend
-    const clientFolder = zip.folder("src/client");
+    // Structure: client/ for frontend source, src/main.tsx for Devvit backend
+    const clientFolder = zip.folder("client");
     const publicFolder = clientFolder.folder("public");
 
     for (const [path, content] of Object.entries(clientFiles)) {
@@ -129,7 +129,7 @@ export { Player } from '@remotion/player';
     }
 
     // 4. Server Code (Devvit)
-    zip.file("src/server/index.ts", getServerIndexTs(projectTitle, indexPath));
+    zip.file("src/main.tsx", getServerMainTsx(projectTitle, indexPath));
     
     const blob = await zip.generateAsync({ type: "blob" });
     return { blob, filename: `${projectSlug}-devvit.zip` };

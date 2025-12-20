@@ -99,156 +99,250 @@ export const simpleLoggerJs = `
 
 export const devvitApiPolyfill = `
 (function() {
-    // 1. Initialize API Client
-    const params = new URLSearchParams(window.location.search);
-    const API_URL = params.get('api');
+    'use strict';
     
-    if (!API_URL) console.warn('[DevvitAPI] No API URL found in query params. Database features may fail.');
-
-    window.DevvitAPI = {
-        _url: API_URL,
-        
-        async _req(path, body = null) {
-            if (!this._url) throw new Error('Devvit API URL not configured');
-            const res = await fetch(this._url + path, {
-                method: body ? 'POST' : 'GET',
-                headers: { 'Content-Type': 'application/json' },
-                body: body ? JSON.stringify(body) : undefined
+    // Request tracking
+    const pendingRequests = new Map();
+    let requestCounter = 0;
+    
+    /**
+     * Generate unique request ID
+     */
+    function generateReqId() {
+        return \`req_\${++requestCounter}_\${Date.now()}_\${Math.random().toString(36).substr(2, 9)}\`;
+    }
+    
+    /**
+     * Send message and wait for response
+     */
+    function sendRequest(type, payload = {}, timeout = 10000) {
+        return new Promise((resolve, reject) => {
+            const reqId = generateReqId();
+            
+            // Set timeout
+            const timeoutId = setTimeout(() => {
+                pendingRequests.delete(reqId);
+                reject(new Error(\`Request timeout: \${type}\`));
+            }, timeout);
+            
+            // Store resolver
+            pendingRequests.set(reqId, {
+                resolve: (data) => {
+                    clearTimeout(timeoutId);
+                    pendingRequests.delete(reqId);
+                    resolve(data);
+                },
+                reject: (error) => {
+                    clearTimeout(timeoutId);
+                    pendingRequests.delete(reqId);
+                    reject(error);
+                }
             });
-            if (!res.ok) throw new Error(\`API Error: \${res.status}\`);
-            return res.json();
-        },
-
+            
+            // Send message to parent (Devvit)
+            window.parent.postMessage({
+                type,
+                reqId,
+                ...payload
+            }, '*');
+        });
+    }
+    
+    /**
+     * Listen for responses from Devvit server
+     */
+    window.addEventListener('message', (event) => {
+        const msg = event.data;
+        if (!msg || !msg.type) return;
+        
+        // Handle request responses
+        if (msg.reqId && pendingRequests.has(msg.reqId)) {
+            const { resolve, reject } = pendingRequests.get(msg.reqId);
+            
+            if (msg.error) {
+                reject(new Error(msg.error));
+            } else {
+                resolve(msg);
+            }
+            return;
+        }
+        
+        // Handle broadcast events (realtime, etc)
+        if (msg.type === 'REALTIME_EVENT') {
+            window.dispatchEvent(new CustomEvent('devvit:realtime', {
+                detail: msg.payload
+            }));
+        }
+    });
+    
+    /**
+     * Public API
+     */
+    window.DevvitAPI = {
         async dbSet(collection, id, data) {
-            return this._req('/api/db/set', { collection, id, data });
+            if (!collection || !id) throw new Error('dbSet requires collection and id');
+            const response = await sendRequest('DB_SET', { collection, id, data });
+            return { success: response.success, id: response.id };
         },
-
+        
         async dbGet(collection) {
-            // Returns object { id: data, ... }
-            return this._req(\`/api/db/get?collection=\${collection}\`);
+            if (!collection) throw new Error('dbGet requires collection name');
+            const response = await sendRequest('DB_GET', { collection });
+            return response.data || {};
         },
-
+        
         async dbDelete(collection, id) {
-            return this._req('/api/db/delete', { collection, id });
+            if (!collection || !id) throw new Error('dbDelete requires collection and id');
+            const response = await sendRequest('DB_DELETE', { collection, id });
+            return { success: response.success };
         },
-
-        async realtimeSend(channel, event) {
-            return this._req('/api/realtime/send', { channel, event });
+        
+        async realtimeSend(event) {
+            window.parent.postMessage({ type: 'REALTIME_SEND', event }, '*');
+            return { success: true };
+        },
+        
+        onRealtimeMessage(callback) {
+            const handler = (e) => callback(e.detail);
+            window.addEventListener('devvit:realtime', handler);
+            return () => window.removeEventListener('devvit:realtime', handler);
         }
     };
+    
+    console.log('[DevvitAPI] PostMessage bridge initialized');
 })();
 `;
 
 export const websimSocketPolyfill = `
-// WebSim Socket -> Devvit API Bridge (Hotswap Version)
-// Maps WebSim Room/Collection API to Devvit HTTP Endpoints & Realtime
+console.log('[WebSim Socket] Initializing PostMessage Bridge...');
 
-console.log('[WebSim Socket] Initializing Hotswap Bridge...');
-
-const _roomState = {};
-const _presence = {};
-const _peers = {};
-const _clientId = 'user_' + Math.random().toString(36).substr(2, 9); 
+const _clientId = 'user_' + Math.random().toString(36).substr(2, 9);
 
 class WebsimCollection {
     constructor(name, socket) {
         this.name = name;
         this.socket = socket;
-        this.records = []; 
+        this.records = [];
         this.subs = [];
         this.loaded = false;
-        
-        // Initial Load via HTTP
+        this.loading = false;
         this._load();
     }
     
     async _load() {
+        if (this.loading) return;
+        this.loading = true;
         try {
-            // Fetch from Devvit Redis
             const dataMap = await window.DevvitAPI.dbGet(this.name);
-            this.records = Object.values(dataMap); // It's already parsed JSON objects if my API works right
+            this.records = Object.values(dataMap);
             this.loaded = true;
             this._notify();
-        } catch(e) {
-            console.error('[WebSim DB] Load failed', e);
+        } catch (error) {
+            console.error(\`[WebSim DB] Failed to load collection "\${this.name}"\`, error);
+            this.loaded = true;
+        } finally {
+            this.loading = false;
         }
     }
-
+    
     getList() {
-        return this.records.sort((a,b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+        return this.records.sort((a, b) => {
+            const aTime = new Date(a.created_at || 0).getTime();
+            const bTime = new Date(b.created_at || 0).getTime();
+            return bTime - aTime;
+        });
     }
-
+    
     async create(data) {
-        const id = Math.random().toString(36).substr(2, 12);
+        const id = \`\${this.name}_\${Date.now()}_\${Math.random().toString(36).substr(2, 9)}\`;
         const record = {
             id,
             ...data,
             created_at: new Date().toISOString(),
-            username: 'Me' // Placeholder, ideally get from context
+            username: 'Player'
         };
-        
-        // Optimistic
         this.records.push(record);
         this._notify();
         
-        // Persist via HTTP
-        window.DevvitAPI.dbSet(this.name, id, record).catch(e => console.error(e));
-        
-        // Broadcast Sync
-        this.socket.send({ type: 'db_sync', collection: this.name, op: { cmd: 'create', data: record } });
-        
-        return record;
+        try {
+            await window.DevvitAPI.dbSet(this.name, id, record);
+            this.socket.send({
+                type: 'db_sync',
+                collection: this.name,
+                op: { cmd: 'create', data: record }
+            });
+            return record;
+        } catch (error) {
+            this.records = this.records.filter(r => r.id !== id);
+            this._notify();
+            throw error;
+        }
     }
-
+    
     async update(id, data) {
         const idx = this.records.findIndex(r => r.id === id);
-        if (idx === -1) throw new Error("Record not found");
+        if (idx === -1) throw new Error(\`Record not found: \${id}\`);
         
-        const record = { ...this.records[idx], ...data };
-        
-        // Optimistic
+        const oldRecord = this.records[idx];
+        const record = { ...oldRecord, ...data };
         this.records[idx] = record;
         this._notify();
-
-        // Persist
-        window.DevvitAPI.dbSet(this.name, id, record).catch(e => console.error(e));
         
-        // Sync
-        this.socket.send({ type: 'db_sync', collection: this.name, op: { cmd: 'update', data: record } });
-        
-        return record;
+        try {
+            await window.DevvitAPI.dbSet(this.name, id, record);
+            this.socket.send({
+                type: 'db_sync',
+                collection: this.name,
+                op: { cmd: 'update', data: record }
+            });
+            return record;
+        } catch (error) {
+            this.records[idx] = oldRecord;
+            this._notify();
+            throw error;
+        }
     }
     
     async delete(id) {
-        // Optimistic
+        const idx = this.records.findIndex(r => r.id === id);
+        if (idx === -1) return;
+        
+        const oldRecord = this.records[idx];
         this.records = this.records.filter(r => r.id !== id);
         this._notify();
         
-        // Persist
-        window.DevvitAPI.dbDelete(this.name, id).catch(e => console.error(e));
-        
-        // Sync
-        this.socket.send({ type: 'db_sync', collection: this.name, op: { cmd: 'delete', data: { id } } });
+        try {
+            await window.DevvitAPI.dbDelete(this.name, id);
+            this.socket.send({
+                type: 'db_sync',
+                collection: this.name,
+                op: { cmd: 'delete', data: { id } }
+            });
+        } catch (error) {
+            this.records.splice(idx, 0, oldRecord);
+            this._notify();
+            throw error;
+        }
     }
-
-    subscribe(cb) {
-        this.subs.push(cb);
-        if(this.loaded) cb(this.getList());
-        return () => { this.subs = this.subs.filter(s => s !== cb); };
+    
+    subscribe(callback) {
+        this.subs.push(callback);
+        if (this.loaded) callback(this.getList());
+        return () => { this.subs = this.subs.filter(s => s !== callback); };
     }
-
+    
     _notify() {
         const list = this.getList();
-        this.subs.forEach(cb => cb(list));
+        this.subs.forEach(cb => { try { cb(list); } catch (e) { console.error(e); } });
     }
-
-    // Called when a remote update comes in via Realtime
+    
     _handleRemoteOp(op) {
         if (op.cmd === 'create') {
-             if (!this.records.find(r => r.id === op.data.id)) this.records.push(op.data);
+            if (!this.records.find(r => r.id === op.data.id)) this.records.push(op.data);
         } else if (op.cmd === 'update') {
             const idx = this.records.findIndex(r => r.id === op.data.id);
             if (idx !== -1) this.records[idx] = op.data;
+            else this.records.push(op.data);
         } else if (op.cmd === 'delete') {
             this.records = this.records.filter(r => r.id !== op.data.id);
         }
@@ -259,95 +353,81 @@ class WebsimCollection {
 class WebsimSocket {
     constructor() {
         this.clientId = _clientId;
-        this.roomState = _roomState;
-        this.presence = _presence;
-        this.peers = _peers;
-        this.listeners = {};
         this.collections = {};
         this.connected = false;
-
-        // Listen for Realtime Events forwarded by the Block
-        window.addEventListener('message', (e) => {
-            if (!e.data || e.data.type !== 'WEBSIM_REALTIME_MSG') return;
-            const envelope = e.data.payload; // The message from realtime service
-            const { type, payload, senderId } = envelope;
-
-            if (senderId === this.clientId) return; // Ignore self-echo via realtime
-
-            // Handle DB Sync Events
+        this.listeners = {};
+        this.roomState = {};
+        this.presence = {};
+        this.peers = {};
+        
+        this._unsubscribeRealtime = window.DevvitAPI.onRealtimeMessage((payload) => {
+            if (payload.senderId === this.clientId) return;
+            const { type, data } = payload;
             if (type === 'db_sync') {
-                if (this.collections[payload.collection]) {
-                    this.collections[payload.collection]._handleRemoteOp(payload.op);
-                }
+                const { collection, op } = data;
+                if (this.collections[collection]) this.collections[collection]._handleRemoteOp(op);
                 return;
             }
-
-            // Normal Events
-            this._handleRemoteEvent(type, payload, senderId);
+            this._handleRemoteEvent(type, data, payload.senderId);
         });
     }
-
+    
     collection(name) {
-        if (!this.collections[name]) {
-            this.collections[name] = new WebsimCollection(name, this);
-        }
+        if (!this.collections[name]) this.collections[name] = new WebsimCollection(name, this);
         return this.collections[name];
     }
-
+    
     async initialize() {
         console.log('[WebSim Socket] Connected.');
         this.connected = true;
-        // Announce join via HTTP Realtime
         this.send({ type: 'join', data: { username: 'Player', id: this.clientId } });
         return Promise.resolve();
     }
-
-    // Generic Send: Uses Devvit API HTTP Endpoint
+    
     send(eventData) {
-        // Wrap in standard websim envelope
-        // If eventData has type, use it, else default
         const type = eventData.type || 'broadcast_event';
-        const payload = eventData.data || eventData; // Handle various websim signatures
-        
-        // If it's a known internal type (db_sync), send flat
-        const finalType = eventData.type || 'broadcast_event';
-        
-        // The Payload structure depends on what we're sending.
-        // For 'broadcast_event' (user custom event), payload is the data.
-        
-        window.DevvitAPI.realtimeSend('websim_global', {
-            type: finalType,
-            senderId: this.clientId,
-            payload: eventData
-        }).catch(e => console.error('RT Send Error', e));
-    }
-
-    _handleRemoteEvent(type, data, senderId) {
-        // Reconstruct event for listener
-        if (this.onmessage) {
-            this.onmessage({ data: { type, ...data, clientId: senderId } });
-        }
+        const payload = eventData.data || eventData;
+        window.DevvitAPI.realtimeSend({ type, data: payload, senderId: this.clientId })
+            .catch(e => console.error('[WebSim Socket] Send error', e));
     }
     
-    // Minimal stub for room/presence to prevent crashes, though 
-    // full multiplayer sync requires more robust implementation
-    updatePresence() {}
-    updateRoomState() {}
+    _handleRemoteEvent(type, data, senderId) {
+        if (this.onmessage) this.onmessage({ data: { type, ...data, clientId: senderId } });
+        const handlers = this.listeners[type] || [];
+        handlers.forEach(handler => { try { handler({ type, data, senderId }); } catch (e) { console.error(e); } });
+    }
+    
+    on(eventType, handler) {
+        if (!this.listeners[eventType]) this.listeners[eventType] = [];
+        this.listeners[eventType].push(handler);
+    }
+    
+    off(eventType, handler) {
+        if (!this.listeners[eventType]) return;
+        this.listeners[eventType] = this.listeners[eventType].filter(h => h !== handler);
+    }
+    
+    updatePresence() { console.warn('presence not impl'); }
+    updateRoomState() { console.warn('room state not impl'); }
     subscribePresence() { return () => {}; }
     subscribeRoomState() { return () => {}; }
     subscribePresenceUpdateRequests() { return () => {}; }
+    
+    disconnect() {
+        if (this._unsubscribeRealtime) this._unsubscribeRealtime();
+        this.connected = false;
+    }
 }
 
 const socket = new WebsimSocket();
 window.WebsimSocket = WebsimSocket;
-
 if (!window.party) {
     window.party = socket;
     window.party.room = socket;
 }
+socket.initialize().catch(e => console.error(e));
 
 export default socket;
-`;
 
 export const websimStubsJs = `
 // WebSim API Stubs for standalone running

@@ -3,11 +3,11 @@ export const generatePackageJson = (slug, dependencies = {}, devDependencies = {
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "src/server/index.ts",
+  "main": "src/main.tsx",
   "scripts": {
     "dev": "devvit playtest",
-    "build:client": "NODE_ENV=production vite build",
-    "setup": "node scripts/setup.js", 
+    "build:client": "vite build",
+    "setup": "node scripts/setup.js",
     "register": "devvit upload",
     "upload": "devvit upload",
     "validate": "node scripts/validate.js"
@@ -27,24 +27,22 @@ export const generatePackageJson = (slug, dependencies = {}, devDependencies = {
   }
 }, null, 2);
 
-export const generateDevvitYaml = (slug) => `
-name: ${slug}
+export const generateDevvitYaml = (slug) => `name: ${slug}
 version: 0.1.0
 webroot: webroot
 `;
 
 export const generateViteConfig = ({ hasReact = false, hasRemotion = false } = {}) => `
 import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
+${hasReact ? "import react from '@vitejs/plugin-react';" : ''}
 
 export default defineConfig({
   mode: 'production',
-  root: 'src/client',
+  root: 'client',
   base: './',
   plugins: [
     ${hasReact ? `react({
-      jsxRuntime: 'automatic', 
-      // Force production runtime even if code tries to import dev
+      jsxRuntime: 'automatic',
       jsxImportSource: 'react',
       include: "**/*.{jsx,tsx,js,ts}",
       babel: {
@@ -56,14 +54,11 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      // CRITICAL: Remotion and some React libs might try to import jsx-dev-runtime in 'dev' mode.
-      // We alias to a local proxy that implements jsxDEV using the production jsx runtime.
       'react/jsx-dev-runtime': '/jsx-dev-proxy.js',
       'react/jsx-runtime': 'react/jsx-runtime',
-      'remotion': 'remotion',
+      ${hasRemotion ? "'remotion': 'remotion'," : ''}
       'websim': '/websim_package.js'
     },
-    // Ensure we prioritize browser builds
     mainFields: ['browser', 'module', 'main'],
   },
   assetsInclude: ['**/*.mp3', '**/*.wav', '**/*.ogg', '**/*.glb', '**/*.gltf', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif'],
@@ -71,26 +66,22 @@ export default defineConfig({
     outDir: '../webroot',
     emptyOutDir: true,
     target: 'es2020',
-    minify: 'esbuild', // standard minification
+    minify: 'esbuild',
     rollupOptions: {
       output: {
-        entryFileNames: "[name].js",
-        chunkFileNames: "[name].js",
-        assetFileNames: "[name][extname]",
+        entryFileNames: "assets/[name]-[hash].js",
+        chunkFileNames: "assets/[name]-[hash].js",
+        assetFileNames: "assets/[name]-[hash][extname]",
       },
-      // Ensure React is treated as a singleton
-      external: [], 
     },
   },
   define: {
-    // Hardcode production environment to prevent libs from taking dev paths
     "process.env.NODE_ENV": JSON.stringify("production"),
     "process.platform": JSON.stringify("browser"),
-    // Remotion specific flags if needed
-    "process.env.REMOTION_ENV": JSON.stringify("production"),
+    ${hasRemotion ? '"process.env.REMOTION_ENV": JSON.stringify("production"),' : ''}
   },
   optimizeDeps: {
-    include: [${hasReact ? "'react', 'react-dom', 'react/jsx-runtime'" : ""}, ${hasRemotion ? "'remotion', '@remotion/player'" : ""}]
+    include: [${hasReact ? "'react', 'react-dom', 'react/jsx-runtime'" : ""}${hasRemotion ? ", 'remotion', '@remotion/player'" : ""}]
   }
 });
 `;
@@ -110,7 +101,8 @@ export const tsConfig = JSON.stringify({
     "noImplicitAny": false
   },
   "include": [
-    "src"
+    "src/**/*",
+    "client/**/*"
   ]
 }, null, 2);
 

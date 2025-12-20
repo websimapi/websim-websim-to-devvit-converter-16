@@ -1,160 +1,125 @@
-export const getServerIndexTs = (title, webviewPath) => `/** @jsx Devvit.createElement */
+export const getServerMainTsx = (title, webviewPath) => `/** @jsx Devvit.createElement */
 /** @jsxFrag Devvit.Fragment */
 
-import { Devvit, useState, useChannel, useAsync } from '@devvit/public-api';
+import { Devvit, useState, useChannel } from '@devvit/public-api';
 
-// 1. Configuration
 Devvit.configure({
   redditAPI: true,
   redis: true,
   realtime: true,
-  http: true, // Enable HTTP Endpoints for Client Fetch
 });
 
-// 2. HTTP API (Express-like Endpoints)
-// Allows the WebSim client to perform DB and Realtime ops via fetch()
-
-// Helper: Standard Response
-const json = (data) => new Response(JSON.stringify(data), { 
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } 
-});
-const error = (msg, status = 500) => new Response(JSON.stringify({ error: msg }), { 
-    status, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' } 
-});
-
-// A. Database Ops
-Devvit.addHttpHandler({
-  method: 'POST',
-  url: '/api/db/set',
-  handler: async (req, context) => {
-    try {
-      const { collection, id, data } = await req.json();
-      if (!collection || !id) return error('Missing collection or id', 400);
-
-      const key = \`websim:col:\${collection}\`;
-      await context.redis.hSet(key, { [id]: JSON.stringify(data) });
-      
-      return json({ success: true, id });
-    } catch (e) {
-      console.error('DB Set Error', e);
-      return error(e.message);
-    }
-  },
-});
-
-Devvit.addHttpHandler({
-  method: 'GET',
-  url: '/api/db/get',
-  handler: async (req, context) => {
-    const url = new URL(req.url);
-    const collection = url.searchParams.get('collection');
-    
-    if (!collection) return error('Missing collection', 400);
-    
-    try {
-        const key = \`websim:col:\${collection}\`;
-        const data = await context.redis.hGetAll(key);
-        // Redis returns object of strings, we parse them back to objects
-        const parsed = {};
-        for (const [k, v] of Object.entries(data || {})) {
-            try { parsed[k] = JSON.parse(v); } catch(e) { parsed[k] = v; }
-        }
-        return json(parsed);
-    } catch (e) {
-        return error(e.message);
-    }
-  }
-});
-
-Devvit.addHttpHandler({
-  method: 'POST',
-  url: '/api/db/delete',
-  handler: async (req, context) => {
-    try {
-      const { collection, id } = await req.json();
-      const key = \`websim:col:\${collection}\`;
-      await context.redis.hDel(key, [id]);
-      return json({ success: true });
-    } catch(e) {
-      return error(e.message);
-    }
-  }
-});
-
-// B. Realtime Ops
-Devvit.addHttpHandler({
-  method: 'POST',
-  url: '/api/realtime/send',
-  handler: async (req, context) => {
-    try {
-      const { channel, event } = await req.json();
-      await context.realtime.send(channel || 'websim_global', event);
-      return json({ success: true });
-    } catch(e) {
-      return error(e.message);
-    }
-  }
-});
-
-// 3. UI & WebView
 Devvit.addCustomPostType({
-  name: 'WebSim Game',
+  name: '${title.replace(/'/g, "\\'")}',
   height: 'tall',
   render: (context) => {
     const [key, setKey] = useState(0);
     
-    // Get the API URL to pass to the client
-    const [apiUrl] = useState(async () => {
-        try {
-            return await context.http.getUrl();
-        } catch(e) { return ''; }
-    });
-
-    // Realtime Bridge (Subscription only)
-    // The server listens to the channel and forwards messages to the WebView
-    const channelName = 'websim_global';
+    const channelName = \`game_\${context.postId || 'global'}\`;
     const channel = useChannel({
       name: channelName,
       onMessage: (msg) => {
         context.ui.webView.postMessage('gameview', {
-          type: 'WEBSIM_REALTIME_MSG',
+          type: 'REALTIME_EVENT',
           payload: msg
         });
       },
     });
-
+    
     channel.subscribe();
+
+    const handleWebViewMessage = async (msg: any) => {
+      try {
+        if (msg.type === 'console') {
+          const prefix = '[WebView]';
+          const args = [prefix, ...(msg.args || [])];
+          if (msg.level === 'error') console.error(...args);
+          else if (msg.level === 'warn') console.warn(...args);
+          else console.log(...args);
+          return;
+        }
+
+        if (msg.type === 'DB_SET') {
+          const { collection, id, data, reqId } = msg;
+          await context.redis.hSet(\`websim:col:\${collection}\`, { 
+            [id]: JSON.stringify(data) 
+          });
+          context.ui.webView.postMessage('gameview', {
+            type: 'DB_SET_RESPONSE',
+            reqId,
+            success: true,
+            id
+          });
+          return;
+        }
+
+        if (msg.type === 'DB_GET') {
+          const { collection, reqId } = msg;
+          const raw = await context.redis.hGetAll(\`websim:col:\${collection}\`);
+          const parsed: Record<string, any> = {};
+          for (const [k, v] of Object.entries(raw || {})) {
+            try { parsed[k] = JSON.parse(v); } catch (e) { parsed[k] = v; }
+          }
+          context.ui.webView.postMessage('gameview', {
+            type: 'DB_GET_RESPONSE',
+            reqId,
+            data: parsed
+          });
+          return;
+        }
+
+        if (msg.type === 'DB_DELETE') {
+          const { collection, id, reqId } = msg;
+          await context.redis.hDel(\`websim:col:\${collection}\`, [id]);
+          context.ui.webView.postMessage('gameview', {
+            type: 'DB_DELETE_RESPONSE',
+            reqId,
+            success: true
+          });
+          return;
+        }
+
+        if (msg.type === 'REALTIME_SEND') {
+          const { event } = msg;
+          await context.realtime.send(channelName, event);
+          context.ui.webView.postMessage('gameview', {
+            type: 'REALTIME_EVENT',
+            payload: event
+          });
+          return;
+        }
+
+      } catch (error) {
+        console.error('[Devvit Server Error]', error);
+        if (msg.reqId) {
+          context.ui.webView.postMessage('gameview', {
+            type: \`\${msg.type}_RESPONSE\`,
+            reqId: msg.reqId,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+    };
 
     return (
       <vstack height="100%" width="100%" alignment="center middle">
         <webview
           id="gameview"
-          url={\`\${webviewPath}?api=\${encodeURIComponent(apiUrl || '')}\`}
+          url="${webviewPath}"
           width="100%"
           height="100%"
           key={key.toString()}
-          onMessage={(msg) => {
-            // Log Handling
-            if (msg.type === 'console' && msg.args) {
-              const prefix = '[Web]';
-              const args = [prefix, ...(msg.args || [])];
-              if (msg.level === 'error') console.error(...args);
-              else if (msg.level === 'warn') console.warn(...args);
-              else if (msg.level === 'info') console.log(...args);
-              else console.log(...args);
-            }
-          }}
+          onMessage={handleWebViewMessage}
         />
         <vstack padding="medium" gap="medium">
-            <button icon="refresh" onPress={() => setKey(k => k + 1)}>Reload Game</button>
-            <text size="small" color="neutral-content-weak">Running on Reddit Devvit</text>
+          <button icon="refresh" onPress={() => setKey(k => k + 1)}>Reload Game</button>
+          <text size="small" color="neutral-content-weak">Running on Reddit Devvit</text>
         </vstack>
       </vstack>
     );
   },
 });
 
-// 4. Creation Menu
 Devvit.addMenuItem({
   label: 'Create ${title.replace(/'/g, "\\'")}',
   location: 'subreddit',

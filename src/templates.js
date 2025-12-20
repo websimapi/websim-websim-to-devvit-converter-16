@@ -1,5 +1,6 @@
 export * from './templates/config.js';
 export * from './templates/app.js';
+// getServerIndexTs renamed to getServerMainTsx
 export * from './templates/polyfills.js';
 // Export websimPackageJs is handled by * export
 export * from './templates/scripts.js';

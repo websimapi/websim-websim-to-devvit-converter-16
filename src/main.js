@@ -213,10 +213,15 @@ btnDownload.addEventListener('click', async () => {
         } else {
             // Fetch from WebSim
             const version = versionSelect.value;
-            toggleLoading(true, 'Downloading assets from WebSim...');
-            const assetResponse = await getAssets(currentProjectMeta.project.id, version);
-            toggleLoading(true, 'Processing files & generating zip...');
-            finalAssets = await processAssets(assetResponse.assets);
+            if (version === 'zip') {
+                // Should use uploaded assets
+                finalAssets = uploadedAssets;
+            } else {
+                toggleLoading(true, 'Downloading assets from WebSim...');
+                const assetResponse = await getAssets(currentProjectMeta.project.id, version);
+                toggleLoading(true, 'Processing files & generating zip...');
+                finalAssets = await processAssets(assetResponse.assets);
+            }
         }
 
         // Generate Zip
@@ -224,11 +229,12 @@ btnDownload.addEventListener('click', async () => {
 
         // Trigger Download
         saveAs(result.blob, result.filename);
+        
+        toggleLoading(false);
 
     } catch (err) {
         alert("Error generating download: " + err.message);
         console.error(err);
-    } finally {
         toggleLoading(false);
     }
 });
