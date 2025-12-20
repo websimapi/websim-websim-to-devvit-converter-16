@@ -11,11 +11,12 @@ Converted from WebSim: ${url}
    \`\`\`
    *Note: Requires Node.js and the Devvit CLI (\`npm i -g devvit\`).*
 
-2. **Run**: Start the emulator.
+2. **Run**: Upload to Reddit and start the emulator.
    \`\`\`bash
    npm run dev
    \`\`\`
-   *Access the emulator at http://localhost:5173 (or as indicated in terminal).*
+   *Visit the "playtest" subreddit link provided in the terminal.*
+   *Inside the subreddit, look for the "Add Game" menu item to create your first game post.*
 
 ## How it Works
 
@@ -25,6 +26,7 @@ Converted from WebSim: ${url}
 
 ## Troubleshooting
 
+- **"Where is the game?"**: Go to your subreddit, click the Moderator Menu (or three dots), and select **"Add Game"**.
 - **"App doesn't exist"**: Run \`npx devvit upload\` manually.
 - **"Invalid token/syntax"**: Ensure your Node version is up to date (v18+).
 - **White Screen/Loading Forever**: Check the terminal for JS errors.

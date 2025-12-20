@@ -10,6 +10,28 @@ Devvit.configure({
   realtime: true,
 });
 
+// Add a menu item to the subreddit menu for instantiating the game
+Devvit.addMenuItem({
+  label: 'Add Game',
+  location: 'subreddit',
+  forUserType: 'moderator',
+  onPress: async (_event, context) => {
+    const { reddit, ui } = context;
+    const subreddit = await reddit.getCurrentSubreddit();
+    await reddit.submitPost({
+      title: '${title.replace(/'/g, "\\'")}',
+      subredditName: subreddit.name,
+      // The preview appears while the post loads
+      preview: (
+        <vstack height="100%" width="100%" alignment="middle center">
+          <text size="large">Loading Game...</text>
+        </vstack>
+      ),
+    });
+    ui.showToast({ text: 'Created Game Post!' });
+  },
+});
+
 // Custom Post Type with WebView
 Devvit.addCustomPostType({
   name: '${title.replace(/'/g, "\\'")}',
