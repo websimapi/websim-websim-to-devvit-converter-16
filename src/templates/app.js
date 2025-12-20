@@ -33,8 +33,8 @@ Devvit.addCustomPostType({
     channel.subscribe();
 
     // Handle messages FROM WebView
-    // Get current user - Avoid destructuring useAsync directly to prevent "not iterable" errors
-    const userResult = useAsync(async () => {
+    // Get current user
+    const { data: currentUser } = useAsync(async () => {
       try {
         const user = await context.reddit.getCurrentUser();
         return user?.username || 'Anonymous';
@@ -43,69 +43,69 @@ Devvit.addCustomPostType({
         return 'Anonymous';
       }
     });
-    const currentUser = userResult.data || 'Anonymous';
     
-    // Queue for Redis operations
+    // Queue for Redis operations (workaround for ServerCallRequired)
     const [redisQueue, setRedisQueue] = useState([]);
     
-    // Process Redis queue
-    // usage of useAsync without destructuring to prevent runtime errors on some Devvit versions
+    // Process Redis queue using useAsync
     useAsync(async () => {
       if (redisQueue.length === 0) return;
       
-      // Snapshot current op to avoid closure race conditions
-      const operation = redisQueue[0];
+      // Process batch to avoid excessive re-renders
+      const batch = [...redisQueue];
       
-      try {
-        if (operation.type === 'DB_SET') {
-          const { collection, id, data, reqId } = operation;
-          await context.redis.hSet(\`websim:col:\${collection}\`, { 
-            [id]: JSON.stringify(data) 
-          });
-          
-          context.ui.webView.postMessage('gameview', {
-            type: 'DB_SET_RESPONSE',
-            reqId,
-            success: true,
-            id
-          });
-        } else if (operation.type === 'DB_GET') {
-          const { collection, reqId } = operation;
-          const raw = await context.redis.hGetAll(\`websim:col:\${collection}\`);
-          const parsed = {};
-          
-          for (const [k, v] of Object.entries(raw || {})) {
-            try { parsed[k] = JSON.parse(v); } catch (e) { parsed[k] = v; }
+      for (const operation of batch) {
+          try {
+            if (operation.type === 'DB_SET') {
+              const { collection, id, data, reqId } = operation;
+              await context.redis.hSet(\`websim:col:\${collection}\`, { 
+                [id]: JSON.stringify(data) 
+              });
+              
+              context.ui.webView.postMessage('gameview', {
+                type: 'DB_SET_RESPONSE',
+                reqId,
+                success: true,
+                id
+              });
+            } else if (operation.type === 'DB_GET') {
+              const { collection, reqId } = operation;
+              const raw = await context.redis.hGetAll(\`websim:col:\${collection}\`);
+              const parsed = {};
+              
+              for (const [k, v] of Object.entries(raw || {})) {
+                try { parsed[k] = JSON.parse(v); } catch (e) { parsed[k] = v; }
+              }
+              
+              context.ui.webView.postMessage('gameview', {
+                type: 'DB_GET_RESPONSE',
+                reqId,
+                data: parsed
+              });
+            } else if (operation.type === 'DB_DELETE') {
+              const { collection, id, reqId } = operation;
+              await context.redis.hDel(\`websim:col:\${collection}\`, [id]);
+              
+              context.ui.webView.postMessage('gameview', {
+                type: 'DB_DELETE_RESPONSE',
+                reqId,
+                success: true
+              });
+            }
+          } catch (error) {
+            console.error('[Redis Operation Error]', error);
+            if (operation.reqId) {
+              context.ui.webView.postMessage('gameview', {
+                type: \`\${operation.type}_RESPONSE\`,
+                reqId: operation.reqId,
+                error: error instanceof Error ? error.message : 'Unknown error'
+              });
+            }
           }
-          
-          context.ui.webView.postMessage('gameview', {
-            type: 'DB_GET_RESPONSE',
-            reqId,
-            data: parsed
-          });
-        } else if (operation.type === 'DB_DELETE') {
-          const { collection, id, reqId } = operation;
-          await context.redis.hDel(\`websim:col:\${collection}\`, [id]);
-          
-          context.ui.webView.postMessage('gameview', {
-            type: 'DB_DELETE_RESPONSE',
-            reqId,
-            success: true
-          });
-        }
-      } catch (error) {
-        console.error('[Redis Operation Error]', error);
-        if (operation.reqId) {
-          context.ui.webView.postMessage('gameview', {
-            type: \`\${operation.type}_RESPONSE\`,
-            reqId: operation.reqId,
-            error: error instanceof Error ? error.message : 'Unknown error'
-          });
-        }
       }
       
-      // Remove processed operation
-      setRedisQueue(q => q.slice(1));
+      // Remove processed operations
+      setRedisQueue(queue => queue.slice(batch.length));
     }, {
       depends: [redisQueue]
     });

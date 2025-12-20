@@ -100,9 +100,11 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
     zip.file("scripts/setup.js", setupScript);
     zip.file("scripts/validate.js", validateScript);
 
-    // 3. Client Folder (Source)
-    // Structure: client/ for frontend source, src/main.tsx for Devvit backend
-    const clientFolder = zip.folder("client");
+    // 3. Source Folders (Client & Server)
+    // Structure: src/client/ for frontend, src/server/ for backend
+    const srcFolder = zip.folder("src");
+    const clientFolder = srcFolder.folder("client");
+    const serverFolder = srcFolder.folder("server");
     const publicFolder = clientFolder.folder("public");
 
     for (const [path, content] of Object.entries(clientFiles)) {
@@ -129,7 +131,7 @@ export { Player } from '@remotion/player';
     }
 
     // 4. Server Code (Devvit)
-    zip.file("src/main.tsx", getServerMainTsx(projectTitle, indexPath));
+    serverFolder.file("main.tsx", getServerMainTsx(projectTitle, indexPath));
     
     const blob = await zip.generateAsync({ type: "blob" });
     return { blob, filename: `${projectSlug}-devvit.zip` };

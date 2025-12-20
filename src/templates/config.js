@@ -3,7 +3,7 @@ export const generatePackageJson = (slug, dependencies = {}, devDependencies = {
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "src/main.tsx",
+  "main": "src/server/main.tsx",
   "scripts": {
     "dev": "devvit playtest",
     "build:client": "vite build",
@@ -34,11 +34,12 @@ webroot: webroot
 
 export const generateViteConfig = ({ hasReact = false, hasRemotion = false } = {}) => `
 import { defineConfig } from 'vite';
+import path from 'path';
 ${hasReact ? "import react from '@vitejs/plugin-react';" : ''}
 
 export default defineConfig({
   mode: 'production',
-  root: 'client',
+  root: 'src/client',
   base: './',
   plugins: [
     ${hasReact ? `react({
@@ -54,16 +55,16 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      'react/jsx-dev-runtime': '/jsx-dev-proxy.js',
+      'react/jsx-dev-runtime': path.resolve(__dirname, 'src/client/jsx-dev-proxy.js'),
       'react/jsx-runtime': 'react/jsx-runtime',
       ${hasRemotion ? "'remotion': 'remotion'," : ''}
-      'websim': '/websim_package.js'
+      'websim': path.resolve(__dirname, 'src/client/websim_package.js')
     },
     mainFields: ['browser', 'module', 'main'],
   },
   assetsInclude: ['**/*.mp3', '**/*.wav', '**/*.ogg', '**/*.glb', '**/*.gltf', '**/*.png', '**/*.jpg', '**/*.jpeg', '**/*.gif'],
   build: {
-    outDir: '../webroot',
+    outDir: '../../webroot',
     emptyOutDir: true,
     target: 'es2020',
     minify: 'esbuild',

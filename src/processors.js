@@ -251,11 +251,14 @@ export class AssetAnalyzer {
         });
 
         // 2. Inject Polyfills (Logger, Socket) - Now extracted to separate files in client/
+        const depth = (filename.match(/\//g) || []).length;
+        const rootPrefix = depth > 0 ? '../'.repeat(depth) : './';
+        
         const polyfills = `
-    <script type="module" src="./devvit_api.js"></script>
-    <script type="module" src="./logger.js"></script>
-    <script type="module" src="./websim_stubs.js"></script>
-    <script type="module" src="./websim_socket.js"></script>`;
+    <script type="module" src="${rootPrefix}devvit_api.js"></script>
+    <script type="module" src="${rootPrefix}logger.js"></script>
+    <script type="module" src="${rootPrefix}websim_stubs.js"></script>
+    <script type="module" src="${rootPrefix}websim_socket.js"></script>`;
         if (html.includes('<head>')) {
             html = html.replace('<head>', '<head>\n    ' + polyfills);
         } else {

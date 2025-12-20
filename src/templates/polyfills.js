@@ -258,8 +258,7 @@ class WebsimCollection {
     }
     
     getList() {
-        // Use spread to avoid mutating the internal records array with sort()
-        const sorted = [...this.records].sort((a, b) => {
+        const sorted = this.records.sort((a, b) => {
             const aTime = new Date(a.created_at || 0).getTime();
             const bTime = new Date(b.created_at || 0).getTime();
             return bTime - aTime; // Newest first
