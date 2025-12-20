@@ -130,8 +130,8 @@ export { Player } from '@remotion/player';
         `.trim());
     }
 
-    // 4. Server Code (Devvit)
-    serverFolder.file("main.tsx", getServerMainTsx(projectTitle, indexPath));
+    // 4. Server Code (Devvit) - Placed at src/main.tsx as required by Devvit
+    srcFolder.file("main.tsx", getServerMainTsx(projectTitle, indexPath));
     
     const blob = await zip.generateAsync({ type: "blob" });
     return { blob, filename: `${projectSlug}-devvit.zip` };

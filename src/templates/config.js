@@ -3,7 +3,7 @@ export const generatePackageJson = (slug, dependencies = {}, devDependencies = {
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "main": "src/server/main.tsx",
+  "main": "src/main.tsx",
   "scripts": {
     "dev": "devvit playtest",
     "build:client": "vite build",
