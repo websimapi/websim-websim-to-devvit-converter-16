@@ -105,9 +105,6 @@ export class AssetAnalyzer {
             if (bareMatch) {
                 const pkgName = bareMatch[1];
                 
-                // Special exclusion for 'websim' pseudo-package
-                if (pkgName === 'websim') return source;
-
                 // Prevent adding scope-only packages (e.g. "@remotion") which cause npm install errors
                 if (pkgName.startsWith('@') && !pkgName.includes('/')) {
                     // If it's specifically @remotion, the user might mean 'remotion' package

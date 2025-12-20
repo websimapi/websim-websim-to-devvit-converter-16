@@ -19,7 +19,6 @@ Devvit.addCustomPostType({
     
     // Realtime Channel for multiplayer sync
     const channelName = \`game_\${context.postId || 'global'}\`;
-    
     const channel = useChannel({
       name: channelName,
       onMessage: (msg) => {
@@ -33,8 +32,9 @@ Devvit.addCustomPostType({
     
     channel.subscribe();
 
-    // Get current user for display
-    const { data: currentUser, loading: userLoading } = useAsync(async () => {
+    // Handle messages FROM WebView
+    // Get current user - Avoid destructuring useAsync directly to prevent "not iterable" errors
+    const userResult = useAsync(async () => {
       try {
         const user = await context.reddit.getCurrentUser();
         return user?.username || 'Anonymous';
@@ -43,23 +43,22 @@ Devvit.addCustomPostType({
         return 'Anonymous';
       }
     });
-
-    // Handle messages FROM WebView
-    const handleWebViewMessage = async (msg) => {
+    const currentUser = userResult.data || 'Anonymous';
+    
+    // Queue for Redis operations
+    const [redisQueue, setRedisQueue] = useState([]);
+    
+    // Process Redis queue
+    // usage of useAsync without destructuring to prevent runtime errors on some Devvit versions
+    useAsync(async () => {
+      if (redisQueue.length === 0) return;
+      
+      // Snapshot current op to avoid closure race conditions
+      const operation = redisQueue[0];
+      
       try {
-        // 1. Console Logging
-        if (msg.type === 'console') {
-          const prefix = '[WebView]';
-          const args = [prefix, ...(msg.args || [])];
-          if (msg.level === 'error') console.error(...args);
-          else if (msg.level === 'warn') console.warn(...args);
-          else console.log(...args);
-          return;
-        }
-
-        // 2. Database Operations (Redis)
-        if (msg.type === 'DB_SET') {
-          const { collection, id, data, reqId } = msg;
+        if (operation.type === 'DB_SET') {
+          const { collection, id, data, reqId } = operation;
           await context.redis.hSet(\`websim:col:\${collection}\`, { 
             [id]: JSON.stringify(data) 
           });
@@ -70,11 +69,8 @@ Devvit.addCustomPostType({
             success: true,
             id
           });
-          return;
-        } 
-        
-        if (msg.type === 'DB_GET') {
-          const { collection, reqId } = msg;
+        } else if (operation.type === 'DB_GET') {
+          const { collection, reqId } = operation;
           const raw = await context.redis.hGetAll(\`websim:col:\${collection}\`);
           const parsed = {};
           
@@ -87,11 +83,8 @@ Devvit.addCustomPostType({
             reqId,
             data: parsed
           });
-          return;
-        } 
-        
-        if (msg.type === 'DB_DELETE') {
-          const { collection, id, reqId } = msg;
+        } else if (operation.type === 'DB_DELETE') {
+          const { collection, id, reqId } = operation;
           await context.redis.hDel(\`websim:col:\${collection}\`, [id]);
           
           context.ui.webView.postMessage('gameview', {
@@ -99,14 +92,46 @@ Devvit.addCustomPostType({
             reqId,
             success: true
           });
+        }
+      } catch (error) {
+        console.error('[Redis Operation Error]', error);
+        if (operation.reqId) {
+          context.ui.webView.postMessage('gameview', {
+            type: \`\${operation.type}_RESPONSE\`,
+            reqId: operation.reqId,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
+      }
+      
+      // Remove processed operation
+      setRedisQueue(q => q.slice(1));
+    }, {
+      depends: [redisQueue]
+    });
+
+    const handleWebViewMessage = (msg) => {
+      try {
+        // Console logging
+        if (msg.type === 'console') {
+          const prefix = '[WebView]';
+          const args = [prefix, ...(msg.args || [])];
+          if (msg.level === 'error') console.error(...args);
+          else if (msg.level === 'warn') console.warn(...args);
+          else console.log(...args);
           return;
         }
 
-        // 3. Realtime Messaging
+        // Queue Redis operations
+        if (msg.type === 'DB_SET' || msg.type === 'DB_GET' || msg.type === 'DB_DELETE') {
+          setRedisQueue(queue => [...queue, msg]);
+          return;
+        }
+
+        // Realtime can be called directly
         if (msg.type === 'REALTIME_SEND') {
           const { event } = msg;
-          await context.realtime.send(channelName, event);
-          // Echo back to sender so they know it was sent (optional, but good for local updates)
+          context.realtime.send(channelName, event);
           context.ui.webView.postMessage('gameview', {
             type: 'REALTIME_EVENT',
             payload: event
@@ -116,14 +141,6 @@ Devvit.addCustomPostType({
 
       } catch (error) {
         console.error('[Devvit Server Error]', error);
-        // Try to report error back to webview if it was a request
-        if (msg.reqId) {
-             context.ui.webView.postMessage('gameview', {
-                type: \`\${msg.type}_RESPONSE\`,
-                reqId: msg.reqId,
-                error: error instanceof Error ? error.message : 'Unknown Server Error'
-             });
-        }
       }
     };
 
